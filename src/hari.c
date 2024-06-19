@@ -17,6 +17,7 @@
 // error codes
 #define HARI_SUCCESS 0
 #define HARI_ERR_COMM_SEQ 1
+
 const char* HARI_ERR_TABLE[] = {
   "Everything normal",
   "Unrecognized escape command",
@@ -45,75 +46,24 @@ struct Cursor cursor = {
 };
 
 /*** util ***/
-// taken from https://www.geeksforgeeks.org/how-to-convert-an-integer-to-a-string-in-c/
-void intToStr(int num, char* str)
+void vsnprintfWrapper(char** outStr, const char* format, ...)
 {
-    int i = 0;
-    // Save the sign of the number
-    int sign = num;
-
-    // If the number is negative, make it positive
-    if (num < 0) num *= -1;
-
-    // Extract digits from the number and add them to the
-    // string
-    do {
-        // Convert integer digit to character
-        str[i++] = num % 10 + '0';
-    } while ((num /= 10) > 0);
-
-    // If the number was negative, add a minus sign to the
-    // string
-    if (sign < 0) {
-        str[i++] = '-';
-    }
-
-    // Null-terminate the string
-    str[i] = '\0';
-
-    // Reverse the string to get the correct order
-    for (int j = 0, k = i - 1; j < k; j++, k--) {
-        char temp = str[j];
-        str[j] = str[k];
-        str[k] = temp;
-    }
-}
-
-int addNumberToString(char** outStr, const char* ogStr, int argc, ...) {
+  int buffer = 48;
+  *outStr = (char*) malloc(buffer*sizeof(char));
+ 
   va_list args;
-  va_start(args,argc);
-  
-  char nStrArr[argc][12];
-  
-  // outStr length is original string length - number of substitution markers (which should be equal to argc)
-  // + the length of every number converted to string. 
-  int outLen = strlen(ogStr) - argc;
-  
-  // calculating the total length of outStr, and putting args into a proper array.
-  for (int i = 0; i < argc; ++i) {
-    intToStr(va_arg(args,int),nStrArr[i]);
-    outLen += strlen(nStrArr[i]);
-  }
+  va_start(args, format);
 
-  *outStr =  (char*) malloc((outLen+1)*sizeof(char));
-
-  int outIndex = 0;
-  int nArrIndex = 0;
-  for (int ogIndex = 0; ogIndex < (int) strlen(ogStr) ; ++ogIndex) {
-    if (ogStr[ogIndex] == HARI_SUB_MARKER) {
-      int len = strlen(nStrArr[nArrIndex]);
-      memcpy((*outStr)+outIndex, nStrArr[nArrIndex], len);
-      outIndex += len;
-      ++nArrIndex;
-      continue;
-    }
-    (*outStr)[outIndex++] = ogStr[ogIndex];
-  }
-
-  (*outStr)[outLen] = '\n';
-
+  int realSize = vsnprintf(*outStr, buffer, format, args);
   va_end(args);
-  return HARI_SUCCESS;
+
+  if (realSize >= buffer) {
+    buffer = realSize+1;
+    *outStr = (char*) realloc(*outStr, buffer*sizeof(char));
+    va_start(args, format);
+    vsnprintf(*outStr, buffer, format, args);
+    va_end(args);
+  }
 }
 
 /*** terminal ***/
@@ -163,12 +113,9 @@ void term_SendCommand(const char* command) {
 void term_SetCursor() {
   int v = cursor.v0 + cursor.vDelta;
   int h = cursor.h0 + cursor.hDelta;
-  const char* SET_CURSOR = "\x1b[%;%H";
+  const char* SET_CURSOR = "\x1b[%d;%dH";
   char* command;
-  if (addNumberToString(&command, SET_CURSOR, 2, v, h) != HARI_SUCCESS) {
-    // error treatment
-  }
-  // printf("\r\nCommand: %s\r\n",command);
+  vsnprintfWrapper(&command, SET_CURSOR, v, h);
   term_SendCommand(command);
 }
 
@@ -189,7 +136,7 @@ void editor_PrintBlankLines() {
   const int HEIGHT = 5;
   const int WIDTH = 4;
   cursor.h0 = WIDTH + 1;
-  cursor.v0 = 2;
+  cursor.v0 = 3;
   for (int y = 0; y < HEIGHT; ++y) {
     for (int x = 1; x < WIDTH; ++x) {
       printf("-");
