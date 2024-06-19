@@ -9,11 +9,22 @@
 
 /*** defines ***/
 #define CTRL_KEY(k) ((k) & 0x1f)
+
+#define HARI_INIT_COMM_LEN 16
+#define HARI_ERR_COMM_SEQ 1
+#define HARI_SUCCESS 0
 void editorClearScreen();
 void die(const char* s);
 
 /*** data ***/
 struct termios orig_termios;
+
+const char* HARI_ERR_TABLE[] = {
+  "Everything normal",
+  "Unrecognized escape command",
+};
+
+const int HARI_ERR_TABLE_LEN = sizeof(HARI_ERR_TABLE) / sizeof(const char*);
 
 /*** util ***/
 int countDigits(int n) {
@@ -76,6 +87,10 @@ void editorClearScreen() {
   write(STDOUT_FILENO, "\x1b[H",3);
 }
 
+void sendCommandToTerminal(const char* command) {
+  write(STDOUT_FILENO, command, strlen(command));
+}
+
 void editorMoveCursor(int up, int right) {
   const char* MOVE_UP = "\x1b[%dA";
   const char* MOVE_DOWN = "\x1b[%dB";
@@ -85,22 +100,22 @@ void editorMoveCursor(int up, int right) {
   char* vert;
   if (up > 0) {
     addNumberToString(&vert, MOVE_UP, up);
-    write(STDOUT_FILENO, vert, strlen(vert));
+    sendCommandToTerminal(vert);
   }
   if (up < 0) {
     addNumberToString(&vert, MOVE_DOWN, -up);
-    write(STDOUT_FILENO, vert, strlen(vert));
+    sendCommandToTerminal(vert);
   }
   free(vert);
 
   char* hori;
   if (right > 0) {
     addNumberToString(&hori, MOVE_RIGHT, right);
-    write(STDOUT_FILENO, hori, strlen(hori));
+    sendCommandToTerminal(hori);
   }
   if (right < 0) {
     addNumberToString(&hori, MOVE_LEFT, right);
-    write(STDOUT_FILENO, hori, strlen(hori));
+    sendCommandToTerminal(hori);
   }
   free(hori);
 }
@@ -130,10 +145,45 @@ void editorRefreshScreen() {
 }
 
 /*** input ***/
+int editorProcRegularEscSeq(char** command) {
+  int commandLen = HARI_INIT_COMM_LEN;
+  char treated = '\0';
+  while (treated < 'a' && treated > 'z') {
+    char c = editorReadKey();
+    int currentLen = strlen(*command);
+    if (currentLen + 1 == commandLen) {
+      commandLen *= 2;
+      *command = realloc(*command,commandLen*sizeof(char));
+    }
+    (*command)[currentLen] = c;
+    treated = c | 0x20;
+  }
+  return 0;
+}
+
+int editorProcessEscapeSequence(char c) {
+  char* command = (char*) malloc(HARI_INIT_COMM_LEN*sizeof(char));
+  int code = HARI_SUCCESS;
+  command[0] = c;
+  command[1] = editorReadKey();
+  switch (command[1]) {
+    case '[':
+      code = editorProcRegularEscSeq(&command);
+      break;
+    default:
+      code = HARI_ERR_COMM_SEQ;
+      break;
+  }
+  sendCommandToTerminal(command);
+  return code;
+}
+
 void editorProcessKeyPress() {
   char c = editorReadKey();
 
   switch (c) {
+    case '\x1b':
+      break;
     case CTRL_KEY('q'):
       editorClearScreen();
       exit(0);

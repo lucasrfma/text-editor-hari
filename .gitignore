@@ -1,7 +1,11 @@
 # Prerequisites
 *.d
 
+# VS Code
+*vscode*
+
 # Object files
+out/*
 *.o
 *.ko
 *.obj
