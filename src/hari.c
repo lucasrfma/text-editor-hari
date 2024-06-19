@@ -1,6 +1,7 @@
 /*** includes ***/
 #include <ctype.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,57 +12,125 @@
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 #define HARI_INIT_COMM_LEN 16
-#define HARI_ERR_COMM_SEQ 1
+#define HARI_SUB_MARKER '%'
+
+// error codes
 #define HARI_SUCCESS 0
-void editorClearScreen();
+#define HARI_ERR_COMM_SEQ 1
+const char* HARI_ERR_TABLE[] = {
+  "Everything normal",
+  "Unrecognized escape command",
+};
+const int HARI_ERR_TABLE_LEN = sizeof(HARI_ERR_TABLE) / sizeof(const char*);
+
+void term_ClearScreen();
 void die(const char* s);
 
 /*** data ***/
 struct termios orig_termios;
 
-const char* HARI_ERR_TABLE[] = {
-  "Everything normal",
-  "Unrecognized escape command",
+// Cursor Data
+struct Cursor {
+  int v0;
+  int vDelta;
+  int h0;
+  int hDelta;
 };
 
-const int HARI_ERR_TABLE_LEN = sizeof(HARI_ERR_TABLE) / sizeof(const char*);
+struct Cursor cursor = {
+  .v0 = 3,
+  .vDelta = 0,
+  .h0 = 5,
+  .hDelta = 0
+};
 
 /*** util ***/
-int countDigits(int n) {
-  int count = 1;
-  while ((n = n/10) > 0) ++count;
-  return count;
+// taken from https://www.geeksforgeeks.org/how-to-convert-an-integer-to-a-string-in-c/
+void intToStr(int num, char* str)
+{
+    int i = 0;
+    // Save the sign of the number
+    int sign = num;
+
+    // If the number is negative, make it positive
+    if (num < 0) num *= -1;
+
+    // Extract digits from the number and add them to the
+    // string
+    do {
+        // Convert integer digit to character
+        str[i++] = num % 10 + '0';
+    } while ((num /= 10) > 0);
+
+    // If the number was negative, add a minus sign to the
+    // string
+    if (sign < 0) {
+        str[i++] = '-';
+    }
+
+    // Null-terminate the string
+    str[i] = '\0';
+
+    // Reverse the string to get the correct order
+    for (int j = 0, k = i - 1; j < k; j++, k--) {
+        char temp = str[j];
+        str[j] = str[k];
+        str[k] = temp;
+    }
 }
 
-/**
-  In this function we take an ogStr (original string) which we expect to have a %d and no other substitution markers
-  we also receive a number to substitute in.
-  outStr will be the receptacle of this result. This function allocates the necessary memory.
-**/
-void addNumberToString(char** outStr, const char* ogStr, int n) {
-  // subtract 2 because we are not only adding the string representation of the number
-  // but substituting the "%d" in the original string.
-  int outLen = countDigits(n) + strlen(ogStr) - 2;
-  // add 1 to the allocation calc bc C strings must end with '\0'
+int addNumberToString(char** outStr, const char* ogStr, int argc, ...) {
+  va_list args;
+  va_start(args,argc);
+  
+  char nStrArr[argc][12];
+  
+  // outStr length is original string length - number of substitution markers (which should be equal to argc)
+  // + the length of every number converted to string. 
+  int outLen = strlen(ogStr) - argc;
+  
+  // calculating the total length of outStr, and putting args into a proper array.
+  for (int i = 0; i < argc; ++i) {
+    intToStr(va_arg(args,int),nStrArr[i]);
+    outLen += strlen(nStrArr[i]);
+  }
+
   *outStr =  (char*) malloc((outLen+1)*sizeof(char));
-  sprintf(*outStr, ogStr, n);
+
+  int outIndex = 0;
+  int nArrIndex = 0;
+  for (int ogIndex = 0; ogIndex < (int) strlen(ogStr) ; ++ogIndex) {
+    if (ogStr[ogIndex] == HARI_SUB_MARKER) {
+      int len = strlen(nStrArr[nArrIndex]);
+      memcpy((*outStr)+outIndex, nStrArr[nArrIndex], len);
+      outIndex += len;
+      ++nArrIndex;
+      continue;
+    }
+    (*outStr)[outIndex++] = ogStr[ogIndex];
+  }
+
+  (*outStr)[outLen] = '\n';
+
+  va_end(args);
+  return HARI_SUCCESS;
 }
 
 /*** terminal ***/
 void die(const char* s) {
-  editorClearScreen();
+  term_ClearScreen();
   perror(s);
   exit(1);
 }
 
-void disableRawMode() {
+void term_DisableRawMode() {
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1) die("Disable raw mode, tcsetattr");
 }
 
-void enableRawMode() {
+void term_EnableRawMode() {
   if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) die("Enable raw mode, tcgetattr");
 
-  atexit(disableRawMode);
+  atexit(term_DisableRawMode);
 
   struct termios raw = orig_termios;
   raw.c_iflag &= ~(ICRNL | IXON);
@@ -73,83 +142,75 @@ void enableRawMode() {
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("Enable raw mode, tcsetattr");
 }
 
-char editorReadKey() {
+char term_ReadKey() {
   int nread;
   char c = '\0';
   while ( (nread = read(STDIN_FILENO, &c, 1)) != 1) {
-    if (nread == -1 && errno != EAGAIN) die("editorReadKey, read");
+    if (nread == -1 && errno != EAGAIN) die("term_ReadKey, read");
   }
   return c;
 }
 
-void editorClearScreen() {
+void term_ClearScreen() {
   write(STDOUT_FILENO, "\x1b[2J", 4);
   write(STDOUT_FILENO, "\x1b[H",3);
 }
 
-void sendCommandToTerminal(const char* command) {
+void term_SendCommand(const char* command) {
   write(STDOUT_FILENO, command, strlen(command));
 }
 
-void editorMoveCursor(int up, int right) {
-  const char* MOVE_UP = "\x1b[%dA";
-  const char* MOVE_DOWN = "\x1b[%dB";
-  const char* MOVE_RIGHT = "\x1b[%dC";
-  const char* MOVE_LEFT = "\x1b[%dD";
-
-  char* vert;
-  if (up > 0) {
-    addNumberToString(&vert, MOVE_UP, up);
-    sendCommandToTerminal(vert);
+void term_SetCursor() {
+  int v = cursor.v0 + cursor.vDelta;
+  int h = cursor.h0 + cursor.hDelta;
+  const char* SET_CURSOR = "\x1b[%;%H";
+  char* command;
+  if (addNumberToString(&command, SET_CURSOR, 2, v, h) != HARI_SUCCESS) {
+    // error treatment
   }
-  if (up < 0) {
-    addNumberToString(&vert, MOVE_DOWN, -up);
-    sendCommandToTerminal(vert);
-  }
-  free(vert);
-
-  char* hori;
-  if (right > 0) {
-    addNumberToString(&hori, MOVE_RIGHT, right);
-    sendCommandToTerminal(hori);
-  }
-  if (right < 0) {
-    addNumberToString(&hori, MOVE_LEFT, right);
-    sendCommandToTerminal(hori);
-  }
-  free(hori);
+  // printf("\r\nCommand: %s\r\n",command);
+  term_SendCommand(command);
 }
 
 /*** output ***/
-void editorPrintMenu() {
+void editor_PrintMenu() {
   printf("[Ctrl+Q] Quit");
   printf("\r\n______________________________________________\r\n");
 }
 
-void editorPrintBlankLines() {
+void editor_MoveCursor(int down, int right) {
+  int hDelta = cursor.hDelta + right;
+  int vDelta = cursor.vDelta + down;
+  cursor.hDelta = hDelta >= 0 ? hDelta : 0;
+  cursor.vDelta = vDelta >= 0 ? vDelta : 0;
+}
+
+void editor_PrintBlankLines() {
   const int HEIGHT = 5;
   const int WIDTH = 4;
+  cursor.h0 = WIDTH + 1;
+  cursor.v0 = 2;
   for (int y = 0; y < HEIGHT; ++y) {
     for (int x = 1; x < WIDTH; ++x) {
       printf("-");
     }
     printf("|\r\n");
   }
-  editorMoveCursor(HEIGHT,WIDTH);
 }
 
-void editorRefreshScreen() {
-  editorClearScreen();
-  editorPrintMenu();
-  editorPrintBlankLines();
+void editor_RefreshScreen() {
+  term_ClearScreen();
+  editor_PrintMenu();
+  editor_PrintBlankLines();
+  term_SetCursor();
 }
 
 /*** input ***/
-int editorProcRegularEscSeq(char** command) {
+int editor_ProcRegularEscSeq(char** command) {
   int commandLen = HARI_INIT_COMM_LEN;
   char treated = '\0';
   while (treated < 'a' && treated > 'z') {
-    char c = editorReadKey();
+    char c = term_ReadKey();
     int currentLen = strlen(*command);
     if (currentLen + 1 == commandLen) {
       commandLen *= 2;
@@ -158,34 +219,34 @@ int editorProcRegularEscSeq(char** command) {
     (*command)[currentLen] = c;
     treated = c | 0x20;
   }
-  return 0;
+  return HARI_SUCCESS;
 }
 
-int editorProcessEscapeSequence(char c) {
+int editor_ProcessEscapeSequence(char c) {
   char* command = (char*) malloc(HARI_INIT_COMM_LEN*sizeof(char));
   int code = HARI_SUCCESS;
   command[0] = c;
-  command[1] = editorReadKey();
+  command[1] = term_ReadKey();
   switch (command[1]) {
     case '[':
-      code = editorProcRegularEscSeq(&command);
+      code = editor_ProcRegularEscSeq(&command);
       break;
     default:
       code = HARI_ERR_COMM_SEQ;
       break;
   }
-  sendCommandToTerminal(command);
+  term_SendCommand(command);
   return code;
 }
 
-void editorProcessKeyPress() {
-  char c = editorReadKey();
+void editor_ProcessKeyPress() {
+  char c = term_ReadKey();
 
   switch (c) {
     case '\x1b':
       break;
     case CTRL_KEY('q'):
-      editorClearScreen();
+      term_ClearScreen();
       exit(0);
       break;
   }
@@ -193,10 +254,12 @@ void editorProcessKeyPress() {
 
 /*** init ***/
 int main() {
-  enableRawMode();
+  term_EnableRawMode();
+  // editor_RefreshScreen();
+  // editor_ProcessKeyPress();
   while (1) {
-   editorRefreshScreen();
-   editorProcessKeyPress();
+   editor_RefreshScreen();
+   editor_ProcessKeyPress();
   }
 
   return 0;
