@@ -5,3 +5,7 @@ build: ./src/hari.c
 
 run: ./out/hari
 	./out/hari
+
+key: ./src/key_ver.c
+	$(CC) ./src/key_ver.c -o ./out/key_ver -Wall -Wextra -pedantic -std=c99
+	./out/key_ver

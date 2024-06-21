@@ -153,44 +153,54 @@ void editor_RefreshScreen() {
 }
 
 /*** input ***/
-int editor_ProcRegularEscSeq(char** command) {
-  int commandLen = HARI_INIT_COMM_LEN;
-  char treated = '\0';
-  while (treated < 'a' && treated > 'z') {
-    char c = term_ReadKey();
-    int currentLen = strlen(*command);
-    if (currentLen + 1 == commandLen) {
-      commandLen *= 2;
-      *command = realloc(*command,commandLen*sizeof(char));
-    }
-    (*command)[currentLen] = c;
-    treated = c | 0x20;
-  }
-  return HARI_SUCCESS;
-}
-
-int editor_ProcessEscapeSequence(char c) {
-  char* command = (char*) malloc(HARI_INIT_COMM_LEN*sizeof(char));
+int editor_ProcRegularEscSeq() {
   int code = HARI_SUCCESS;
-  command[0] = c;
-  command[1] = term_ReadKey();
-  switch (command[1]) {
-    case '[':
-      code = editor_ProcRegularEscSeq(&command);
+  char c = term_ReadKey();
+  switch (c) {
+    case 'A':
+      editor_MoveCursor(-1,0);
+      break;
+    case 'B':
+      editor_MoveCursor(1,0);
+      break;
+    case 'C':
+      editor_MoveCursor(0,1);
+      break;
+    case 'D':
+      editor_MoveCursor(0,-1);
       break;
     default:
       code = HARI_ERR_COMM_SEQ;
       break;
   }
-  term_SendCommand(command);
+  return code;
+}
+
+int editor_ProcessEscapeSequence() {
+  int code = HARI_SUCCESS;
+  char c = term_ReadKey();
+  switch (c) {
+    case '[':
+      code = editor_ProcRegularEscSeq();
+      break;
+    default:
+      code = HARI_ERR_COMM_SEQ;
+      break;
+  }
   return code;
 }
 
 void editor_ProcessKeyPress() {
   char c = term_ReadKey();
 
+  if(isprint(c) != 0)
+  {
+    
+  }
+
   switch (c) {
     case '\x1b':
+      editor_ProcessEscapeSequence(c);
       break;
     case CTRL_KEY('q'):
       term_ClearScreen();
