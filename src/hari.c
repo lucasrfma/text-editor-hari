@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -28,7 +29,18 @@ void term_ClearScreen();
 void die(const char* s);
 
 /*** data ***/
-struct termios orig_termios;
+const int HEADER_HEIGHT = 2;
+
+struct editorConfig {
+  struct termios orig_termios;
+  int screenRows;
+  int screenCols;
+  int firstPrintedRow;
+};
+
+struct editorConfig E = {
+  .firstPrintedRow = 1
+};
 
 // Cursor Data
 struct Cursor {
@@ -46,7 +58,13 @@ struct Cursor cursor = {
 };
 
 /*** util ***/
-void vsnprintfWrapper(char** outStr, const char* format, ...)
+int util_NumberOfDigits(int n) {
+  int i = 1;
+  while ((n = n / 10) > 0) ++i;
+  return i;
+}
+
+void util_vsnprintfWrapper(char** outStr, const char* format, ...)
 {
   int buffer = 48;
   *outStr = (char*) malloc(buffer*sizeof(char));
@@ -66,6 +84,25 @@ void vsnprintfWrapper(char** outStr, const char* format, ...)
   }
 }
 
+/*** append buffer ***/
+struct abuf {
+  char *b;
+  int len;
+};
+
+#define ABUF_INIT {NULL, 0}
+
+void abAppend(struct abuf *ab, const char *s, int len) {
+  char *new = realloc(ab->b, ab->len + len);
+  if (new == NULL) return;
+  memcpy(&new[ab->len], s, len);
+  ab->b = new;
+  ab->len += len;
+}
+void abFree(struct abuf *ab) {
+  free(ab->b);
+}
+
 /*** terminal ***/
 void die(const char* s) {
   term_ClearScreen();
@@ -74,15 +111,15 @@ void die(const char* s) {
 }
 
 void term_DisableRawMode() {
-  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1) die("Disable raw mode, tcsetattr");
+  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == -1) die("Disable raw mode, tcsetattr");
 }
 
 void term_EnableRawMode() {
-  if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) die("Enable raw mode, tcgetattr");
+  if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) die("Enable raw mode, tcgetattr");
 
   atexit(term_DisableRawMode);
 
-  struct termios raw = orig_termios;
+  struct termios raw = E.orig_termios;
   raw.c_iflag &= ~(ICRNL | IXON);
   raw.c_oflag &= ~(OPOST);
   raw.c_lflag &= ~(ECHO | ICANON | IEXTEN |  ISIG);
@@ -103,7 +140,7 @@ char term_ReadKey() {
 
 void term_ClearScreen() {
   write(STDOUT_FILENO, "\x1b[2J", 4);
-  write(STDOUT_FILENO, "\x1b[H",3);
+  // write(STDOUT_FILENO, "\x1b[H",3);
 }
 
 void term_SendCommand(const char* command) {
@@ -115,14 +152,48 @@ void term_SetCursor() {
   int h = cursor.h0 + cursor.hDelta;
   const char* SET_CURSOR = "\x1b[%d;%dH";
   char* command;
-  vsnprintfWrapper(&command, SET_CURSOR, v, h);
+  util_vsnprintfWrapper(&command, SET_CURSOR, v, h);
   term_SendCommand(command);
+}
+
+void term_GetCursorPosition(int *rows, int *cols) {
+  if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) die("Couldn't read cursor position.");
+
+  char buf[32];
+  unsigned int i = 0;
+  while (i < sizeof(buf) - 1) {
+    if (read(STDIN_FILENO, &buf[i], 1) != 1) break;
+    if (buf[i] == 'R') break;
+    ++i;
+  }
+  buf[i] = '\0';
+  
+  printf("\r\n&buf[1]: '%s'\r\n", &buf[2]);
+  if (buf[0] != '\x1b' || buf[1] != '[') die("GetCursorPosition: not the expected escape seq");
+  if (sscanf(&buf[2], "%d;%d", rows, cols) != 2) die("GetCursorPosition: not the expected values");
+}
+
+void term_UpdateWindowSize() {
+  struct winsize ws;
+
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
+    if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) die("Couldn't position cursor at end");
+    term_GetCursorPosition(&E.screenRows, &E.screenCols);
+    return;
+  }
+  E.screenCols = ws.ws_col;
+  E.screenRows = ws.ws_row;
 }
 
 /*** output ***/
 void editor_PrintMenu() {
   printf("[Ctrl+Q] Quit");
   printf("\r\n______________________________________________\r\n");
+}
+
+void editor_FirstPosition(int* v, int* h) {
+  *v = HEADER_HEIGHT + 1;
+  *h = util_NumberOfDigits(E.firstPrintedRow + E.screenRows - HEADER_HEIGHT) + 1;
 }
 
 void editor_MoveCursor(int down, int right) {
@@ -133,19 +204,20 @@ void editor_MoveCursor(int down, int right) {
 }
 
 void editor_PrintBlankLines() {
-  const int HEIGHT = 5;
-  const int WIDTH = 4;
-  cursor.h0 = WIDTH + 1;
-  cursor.v0 = 3;
-  for (int y = 0; y < HEIGHT; ++y) {
-    for (int x = 1; x < WIDTH; ++x) {
-      printf("-");
+  cursor.v0 = HEADER_HEIGHT + 1;
+  const int height = E.screenRows - cursor.v0;
+  const int width = util_NumberOfDigits(E.firstPrintedRow + E.screenRows - HEADER_HEIGHT);
+  cursor.h0 = width + 1;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 1; x < width; ++x) {
+      write(STDOUT_FILENO,"-",1);
     }
-    printf("|\r\n");
+    write(STDOUT_FILENO, "|\r\n", 3);
   }
 }
 
 void editor_RefreshScreen() {
+  term_UpdateWindowSize();
   term_ClearScreen();
   editor_PrintMenu();
   editor_PrintBlankLines();
